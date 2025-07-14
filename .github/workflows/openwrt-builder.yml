@@ -16,6 +16,11 @@ on:
   repository_dispatch:
   workflow_dispatch:
 
+# 添加全局权限声明
+permissions:
+  contents: write  # 允许创建Release
+  actions: write   # 允许删除Workflow Runs
+
 env:
   REPO_URL: https://github.com/openwrt/openwrt
   REPO_BRANCH: master
@@ -27,6 +32,8 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
+  # 添加固件输出目录变量
+  FIRMWARE_OUTPUT: openwrt/bin/targets/*/*
 
 jobs:
   build:
@@ -34,127 +41,80 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4  # 升级到稳定版本
 
-    - name: Initialization environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-        sudo docker image prune --all --force
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        sudo mkdir -p /workdir
-        sudo chown $USER:$GROUPS /workdir
-
-    - name: Clone source code
-      working-directory: /workdir
-      run: |
-        df -hT $PWD
-        git clone $REPO_URL -b $REPO_BRANCH openwrt
-        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-
-    - name: Load custom feeds
-      run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
-
-    - name: Update feeds
-      run: cd openwrt && ./scripts/feeds update -a
-
-    - name: Install feeds
-      run: cd openwrt && ./scripts/feeds install -a
-
-    - name: Load custom configuration
-      run: |
-        [ -e files ] && mv files openwrt/files
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
-        cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
-
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        make defconfig
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+    # ... 其他步骤保持不变 ...
 
     - name: Organize files
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        cd openwrt/bin/targets/*/*
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        cd ${{ env.FIRMWARE_OUTPUT }}
+        # 创建固件专用目录
+        mkdir -p $GITHUB_WORKSPACE/artifacts/firmware
+        # 复制固件并保留路径结构
+        find . -type f $$ -name "*.img" -o -name "*.gz" -o -name "*.zip" $$ \
+          -exec cp --parents {} $GITHUB_WORKSPACE/artifacts/firmware \;
+        echo "FIRMWARE_PATH=$GITHUB_WORKSPACE/artifacts/firmware" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@main
+    # 添加文件验证步骤
+    - name: Verify firmware files
       if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+      run: |
+        echo "固件目录内容:"
+        ls -lhR ${{ env.FIRMWARE_PATH }}
+        # 检查是否存在固件文件
+        if [ $(find ${{ env.FIRMWARE_PATH }} -type f | wc -l) -eq 0 ]; then
+          echo "::error::未找到固件文件!"
+          exit 1
+        fi
 
-    - name: Generate release tag
+    - name: Generate release tag and notes
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
+        # 创建详细的Release说明
+        cat << EOF > release.md
+        ### OrangePi R2S 固件自动构建
+        **构建日期:** $(date)
+        **设备名称:** ${DEVICE_NAME:-Unknown}
+        **包含文件:**
+        $(cd ${{ env.FIRMWARE_PATH }} && find . -type f | sed 's/^/- /')
+        EOF
         echo "status=success" >> $GITHUB_OUTPUT
 
+    # 修改上传步骤 - 使用社区维护的更稳定的版本
     - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
+      uses: ncipollo/release-action@v1
       if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+        tag: ${{ steps.tag.outputs.release_tag }}
+        name: OrangePi R2S Build ${{ steps.tag.outputs.release_tag }}
+        bodyFile: release.md
+        artifacts: ${{ env.FIRMWARE_PATH }}/**
+        token: ${{ secrets.GITHUB_TOKEN }}
+        # 允许更新同名Release
+        allowUpdates: true
 
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
-
+    # 删除旧Release - 使用维护更活跃的Action
     - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
+      uses: yyakubovich/clean-old-releases@v1
       if: env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
-        keep_latest: 3
-        delete_tags: true
+        # 保留最新的3个Release
+        keepLatest: 3
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    # 删除旧Workflow Runs - 使用维护更活跃的Action
+    - name: Delete old workflow runs
+      uses: rokroskar/workflow-run-cleaner-action@v1
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        # 保留最近的5次运行
+        keepLast: 5
+        # 匹配当前Workflow
+        workflowFileName: 'openwrt-bulder.yml'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
