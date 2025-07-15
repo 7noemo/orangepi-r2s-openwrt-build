@@ -6,22 +6,19 @@ env:
 
 on:
   workflow_dispatch:
-#  schedule:
-#    - cron: 0 */18 * * *
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    # 关键修复：提升权限级别
+    # 关键修复：替换无效权限字段
     permissions:
-      contents: write
-      actions: write  # 必须升级为write权限才能删除工作流运行
-      workflows: write
+      contents: write   # 允许写仓库内容
+      actions: write    # 允许管理工作流（删除旧运行）
 
     steps:
     - name: Checkout current repo
       uses: actions/checkout@v4
-      
+
     - name: Get Commit Hash
       id: getHash
       run: |
@@ -49,11 +46,11 @@ jobs:
         token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
         event-type: Source Code Update
 
-    # 关键修复：删除工作流步骤优化
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@v2
       with:
-        token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}  # 必须显式传递令牌
+        token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
         retain_days: 0
         keep_minimum_runs: 2
-        delete_workflow_by_state_pattern: "completed"  # 仅删除已完成的工作流
+        # 可选：仅删除已完成的工作流
+        delete_workflow_by_state_pattern: "completed"
