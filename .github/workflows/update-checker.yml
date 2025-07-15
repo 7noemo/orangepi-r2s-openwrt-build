@@ -12,10 +12,11 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # 关键修复：添加权限声明
+    # 关键修复：提升权限级别
     permissions:
-      contents: write  # 允许写操作（缓存和触发事件）
-      actions: read    # 允许读取Actions状态
+      contents: write
+      actions: write  # 必须升级为write权限才能删除工作流运行
+      workflows: write
 
     steps:
     - name: Checkout current repo
@@ -41,17 +42,18 @@ jobs:
       run: |
         echo ${{ steps.getHash.outputs.commitHash }} > .commitHash
 
-    # 关键修复：使用PAT替代默认token
     - name: Trigger build
       if: steps.cacheHash.outputs.cache-hit != 'true'
       uses: peter-evans/repository-dispatch@v2
       with:
-        # 需要在仓库Secrets中创建REPO_ACCESS_TOKEN
         token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
         event-type: Source Code Update
 
+    # 关键修复：删除工作流步骤优化
     - name: Delete workflow runs
       uses: Mattraks/delete-workflow-runs@v2
       with:
+        token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}  # 必须显式传递令牌
         retain_days: 0
         keep_minimum_runs: 2
+        delete_workflow_by_state_pattern: "completed"  # 仅删除已完成的工作流
