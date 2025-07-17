@@ -1,7 +1,7 @@
 ## 鸣谢
 **项目支持：**[P3TERX/Actions-OpenWrt](https://github.com/P3TERX/Actions-OpenWrt)
 
-**源码支持：**Orangepi [官方openwrt源码](https://github.com/orangepi-xunlong/openwrt)
+**源码支持**：Orangepi [官方openwrt源码](https://github.com/orangepi-xunlong/openwrt)
 
 ### 简介
 本项目基于Orangepi官方openwrt源码库 24.10分支编译，```.config```文件也来自官方。
